@@ -17,7 +17,7 @@ _DONE = 200
 
 # Hypothèse B du Design Document (EPF-MDE/OceENS#121) : durée typique d'un job,
 # mesurée le 25 septembre 2026.
-_SECONDS_PER_JOB = 20
+_SECONDS_PER_JOB = 30
 
 
 @dataclass(frozen=True)
