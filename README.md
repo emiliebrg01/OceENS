@@ -697,6 +697,58 @@ duplicates are refused.
 
 ---
 
+## Deploying this fork on Azure App Service
+
+This fork (`emiliebrg01/OceENS`) is deployed by its GitHub Actions workflow,
+`.github/workflows/architecture.yml`, to one Azure App Service plan (Linux, B1,
+Germany West Central, always on) holding two apps:
+
+| Environment | App | Receives |
+|---|---|---|
+| Fork staging | `oceens-emilie-staging` | every green commit of the default branch |
+| Fork production | `oceens-emilie-production` | only an image staging already received |
+
+### Deploy on green, to staging
+
+A push to the default branch runs `architecture` and `test`. Only when both
+pass does `deploy to staging` run: it builds one image, tagged with the commit
+(`ghcr.io/emiliebrg01/oceens:<commit>`), pushes it to GHCR, and has the staging
+app run it. A pull request, a red run or a push to another branch deploys
+nothing, and a commit pushed twice is built once.
+
+The deploy itself, `.github/actions/deploy-to-app-service`, writes the
+environment's settings on its app, sets the image, then waits until the app
+answers `200` on `/dev/login` **from that image**: every response carries the
+commit it was built from in its `X-Revision` header. The job fails if the new
+image has not answered within 700 s.
+
+### Settings and secrets
+
+Each GitHub Environment, `staging` and `production`, holds its own: the Azure
+IDs, resource group and app name as variables; `DEV_LOGIN_KEY`, `SECRET_KEY` and
+`MISTRAL_API_KEY` as secrets. Nothing is committed, and `.env.example`'s values
+are never used. Every deploy writes them to the app along with:
+
+- `AUTH_MODE=dev`: a fork signs in through the dev sign-in, guarded by the
+  environment's own `DEV_LOGIN_KEY`, never through Microsoft;
+- `RUN_SUMMARIES_DAEMON=1`: the container is the only process, so it starts
+  `oceens-summaries` beside uvicorn, the two processes `launch.sh` started;
+- `DEFAULT_PROVIDER_*`: the default LLM provider is Mistral
+  (`openai` API type, `https://api.mistral.ai/v1`, `ministral-14b-latest`, key
+  read from `MISTRAL_API_KEY`). Check it in `/backend/providers` once deployed;
+- `WEBSITES_PORT=8000` and `WEBSITES_ENABLE_APP_SERVICE_STORAGE=false`.
+
+The workflow logs in to Azure through OpenID Connect, as its GitHub
+Environment: no Azure password or publish profile is stored.
+
+### Known limits
+
+- **The data is reset at every deploy and every restart.** App Service's lasting
+  storage, `/home`, is a network share on which SQLite cannot take its locks, so
+  the database lives on the container's disk and is seeded again at every start.
+- **Staging, production and a local run share one Mistral quota.** A local run
+  with the same key can make Mistral answer `429` to production.
+
 ## Deployment checklist
 
 - [ ] `.env` created with the real Azure credentials and a dedicated `SECRET_KEY`
