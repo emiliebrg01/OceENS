@@ -1,0 +1,98 @@
+# The Promotion: Fork production only ever receives the image Fork staging
+# already received, from a deploy that passed. Started by hand, never on a push
+# or a schedule:
+#
+#   gh workflow run promote.yml -R emiliebrg01/OceENS
+#
+# or Actions → Promote to production → Run workflow.
+#
+# It builds nothing. It reads the runs of the deploy-on-green workflow
+# (architecture.yml), not the staging app: a failed deploy has already set the
+# staging app to an image that never answered, and that image must never be
+# promoted.
+name: Promote to production
+
+on:
+  workflow_dispatch:
+
+jobs:
+  # First half: find the image of staging's last green deploy.
+  last-green-staging:
+    name: find staging's last green deploy
+    # The deploy action below is taken from the branch the Promotion runs on:
+    # only the default branch's, which every deploy to staging used.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      image: ${{ steps.find.outputs.image }}
+    steps:
+      # The push runs on the default branch, newest first. The first one whose
+      # `deploy to staging` job passed built and deployed the image tagged with
+      # its commit; each one before it is logged and skipped. With no such run,
+      # nothing is promoted. Only the newest 100 push runs are read.
+      # `deploy to staging` is the job's name in architecture.yml: renaming it
+      # there means renaming it here too.
+      - name: Find the last run whose deploy to staging passed
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEPLOY_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          runs=$(gh run list --workflow architecture.yml --branch "$DEPLOY_BRANCH" --event push --limit 100 \
+            --json databaseId,headSha --jq '.[] | "\(.databaseId) \(.headSha)"')
+          while read -r run sha; do
+            [ -n "$run" ] || continue
+            deploy=$(gh run view "$run" --json jobs --jq '.jobs[] | select(.name == "deploy to staging") | .conclusion')
+            if [ "$deploy" = success ]; then
+              image="ghcr.io/${GITHUB_REPOSITORY,,}:$sha"
+              echo "Run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run, commit $sha: deploy to staging passed"
+              echo "Promoting $image"
+              echo "image=$image" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Run $run, commit $sha: deploy to staging ${deploy:-has no result}, skipped"
+          done <<< "$runs"
+          echo "No push run on $DEPLOY_BRANCH has a deploy to staging that passed: nothing to promote" >&2
+          exit 1
+
+  # Second half: deploy that same image to production, with production's own
+  # settings and secrets. Nothing is rebuilt.
+  promote-production:
+    name: promote to production
+    needs: last-green-staging
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net
+    steps:
+      # For the deploy action only: nothing is built from this checkout.
+      - uses: actions/checkout@v7.0.1
+
+      # Pinned to the commit of v3.1.0, not to the tag: this job may obtain an
+      # Azure token (id-token: write), and a tag can be moved to other code.
+      - name: Log in to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy that image to production
+        uses: ./.github/actions/deploy-to-app-service
+        with:
+          image: ${{ needs.last-green-staging.outputs.image }}
+          resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          secret-key: ${{ secrets.SECRET_KEY }}
+          dev-login-key: ${{ secrets.DEV_LOGIN_KEY }}
+          mistral-api-key: ${{ secrets.MISTRAL_API_KEY }}
+          default-provider-base-url: https://api.mistral.ai/v1
