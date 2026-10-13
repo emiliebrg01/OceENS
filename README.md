@@ -10,7 +10,7 @@ Answers can be exported, visualised, and summarised through an LLM. The interfac
 EPF's official visual identity.
 
 The application itself is in French: its pages, its seeded demo content and the survey
-questions are written in French. The documentation is in English — see `CONTEXT.md` for
+questions are written in French. The documentation is in English — see `GLOSSARY.md` for
 where that boundary sits.
 
 ### Technical stack
@@ -273,6 +273,7 @@ variable the code reads, with its default.
 | `DEFAULT_PROVIDER_MODEL` | no (default `gemma4:26b`) | Model the default provider uses. |
 | `DEFAULT_PROVIDER_KEY_ENV` | no (default `LLM_API_KEY`) | Name of the variable holding the default provider's key, not the key itself. Must start with `LLM_` or end with `_API_KEY`. |
 | `RUN_SUMMARIES_DAEMON` | no | `1`/`true`/`yes`/`on` starts the summaries daemon alongside Uvicorn. Set it whenever the application is the only process that runs, as with the image or Docker Compose: otherwise requested summaries stay pending, with no error to say so. Leave it unset where something else starts `oceens-summaries`, as `launch.sh` does, or two daemons run. |
+| `FORWARDED_ALLOW_IPS` | behind a proxy that ends TLS | Comma-separated addresses of the proxies whose `X-Forwarded-Proto` and `X-Forwarded-For` Uvicorn believes, or `*` for any. Defaults to `127.0.0.1`. Behind a proxy that ends TLS, set it to that proxy's address as the application sees it: otherwise the application builds its links with `http`, and the browser blocks the pages' CSS as mixed content. The Docker image sets `*`, since its proxy's address is only known at deploy time (on Azure App Service, it is not fixed); set the proxy's address instead where you know it. |
 
 `SECRET_KEY` signs the session cookies: anyone who knows it can forge an admin session. It
 is **required unless `AUTH_MODE=dev`**: when missing or empty, the application logs a
@@ -541,7 +542,7 @@ OceENS/
 ├── .env                          # Environment variables (⚠️ never committed)
 ├── .gitignore                    # Files and directories ignored by Git
 ├── Template_2025.md              # Reference wording of the survey template
-├── CONTEXT.md                    # Domain glossary and language boundary
+├── GLOSSARY.md                   # Domain glossary and language boundary
 ├── AGENTS.md, CLAUDE.md          # Conventions for coding agents
 ├── tach.toml                     # The package boundary rule, checked by `tach check`
 │
@@ -696,12 +697,66 @@ duplicates are refused.
 
 ---
 
+## Deploying this fork on Azure App Service
+
+This fork (`emiliebrg01/OceENS`) is deployed by its GitHub Actions workflow,
+`.github/workflows/architecture.yml`, to one Azure App Service plan (Linux, B1,
+Germany West Central, always on) holding two apps:
+
+| Environment | App | Receives |
+|---|---|---|
+| Fork staging | `oceens-emilie-staging` | every green commit of the default branch |
+| Fork production | `oceens-emilie-production` | only an image staging already received |
+
+### Deploy on green, to staging
+
+A push to the default branch runs `architecture` and `test`. Only when both
+pass does `deploy to staging` run: it builds one image, tagged with the commit
+(`ghcr.io/emiliebrg01/oceens:<commit>`), pushes it to GHCR, and has the staging
+app run it. A pull request, a red run or a push to another branch deploys
+nothing, and a commit pushed twice is built once.
+
+The deploy itself, `.github/actions/deploy-to-app-service`, writes the
+environment's settings on its app, sets the image, then waits until the app
+answers `200` on `/dev/login` **from that image**: every response carries the
+commit it was built from in its `X-Revision` header. The job fails if the new
+image has not answered within 700 s.
+
+### Settings and secrets
+
+Each GitHub Environment, `staging` and `production`, holds its own: the Azure
+IDs, resource group and app name as variables; `DEV_LOGIN_KEY`, `SECRET_KEY` and
+`MISTRAL_API_KEY` as secrets. Nothing is committed, and `.env.example`'s values
+are never used. Every deploy writes them to the app along with:
+
+- `AUTH_MODE=dev`: a fork signs in through the dev sign-in, guarded by the
+  environment's own `DEV_LOGIN_KEY`, never through Microsoft;
+- `RUN_SUMMARIES_DAEMON=1`: the container is the only process, so it starts
+  `oceens-summaries` beside uvicorn, the two processes `launch.sh` started;
+- `DEFAULT_PROVIDER_*`: the default LLM provider is Mistral
+  (`openai` API type, `https://api.mistral.ai/v1`, `ministral-14b-latest`, key
+  read from `MISTRAL_API_KEY`). Check it in `/backend/providers` once deployed;
+- `WEBSITES_PORT=8000` and `WEBSITES_ENABLE_APP_SERVICE_STORAGE=false`.
+
+The workflow logs in to Azure through OpenID Connect, as its GitHub
+Environment: no Azure password or publish profile is stored.
+
+### Known limits
+
+- **The data is reset at every deploy and every restart.** App Service's lasting
+  storage, `/home`, is a network share on which SQLite cannot take its locks, so
+  the database lives on the container's disk and is seeded again at every start.
+- **Staging, production and a local run share one Mistral quota.** A local run
+  with the same key can make Mistral answer `429` to production.
+
 ## Deployment checklist
 
 - [ ] `.env` created with the real Azure credentials and a dedicated `SECRET_KEY`
       (required unless `AUTH_MODE=dev`, otherwise the application refuses to start)
 - [ ] `AUTH_MODE` unset or `entra`
 - [ ] Valid SSL certificate (Let's Encrypt or equivalent)
+- [ ] Behind a proxy that ends TLS: `FORWARDED_ALLOW_IPS` set to that proxy (the Docker
+      image sets `*`), so that pages link their CSS over HTTPS
 - [ ] `https_only=True` in the SessionMiddleware (automatic unless `AUTH_MODE=dev`)
 - [ ] Database present (`database/db_oceens.db`) or its directory mounted
 - [ ] Environment variables kept secret, including `LLM_API_KEY`
