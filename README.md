@@ -722,6 +722,19 @@ answers `200` on `/dev/login` **from that image**: every response carries the
 commit it was built from in its `X-Revision` header. The job fails if the new
 image has not answered within 700 s.
 
+### Promotion, to production
+
+Production receives nothing on a push. The Promotion,
+`.github/workflows/promote.yml`, is started by hand from the default branch
+(*Actions → Promote to production → Run workflow*, or
+`gh workflow run promote.yml`). It reads the push runs of `architecture.yml` on
+the default branch, newest first, logs each one whose `deploy to staging` did not
+pass, and takes the first whose deploy passed. It then deploys **that run's
+image tag** to production, through the same deploy action, with production's
+own settings. It builds nothing, and it does not read the staging app: after a
+failed deploy, staging is set to an image that never answered, and that image is
+never promoted.
+
 ### Settings and secrets
 
 Each GitHub Environment, `staging` and `production`, holds its own: the Azure
