@@ -91,8 +91,10 @@ jobs:
           fi
           echo "image=$image" >> "$GITHUB_OUTPUT"
 
+      # Pinned to the commit of v3.1.0, not to the tag: this job may obtain an
+      # Azure token (id-token: write), and a tag can be moved to other code.
       - name: Log in to Azure
-        uses: azure/login@v3.1.0
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
